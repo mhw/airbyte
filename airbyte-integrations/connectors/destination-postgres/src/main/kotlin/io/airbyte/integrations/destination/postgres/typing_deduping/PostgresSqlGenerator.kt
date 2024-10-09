@@ -188,6 +188,32 @@ class PostgresSqlGenerator(namingTransformer: NamingConventionTransformer, casca
             // '{}' is an empty json path (it's an empty array literal), so it just stringifies the
             // json value.
             return DSL.field("{0} #>> '{}'", String::class.java, field)
+        } else if (type === AirbyteProtocolType.INTEGER) {
+            val dialectType = toDialectType(type)
+            // jsonb can't directly cast to most types, so convert to text first.
+            // also convert jsonb null to proper sql null. For numeric fields extracted
+            // by CDC we get JSON string values, so trim and surrounding quotes from the
+            // text.
+            val extractAsText =
+                DSL.trim(
+                    DSL.case_()
+                        .`when`(
+                            field.isNull().or(jsonTypeof(field).eq("null")),
+                            DSL.`val`(null as String?)
+                        )
+                        .else_(DSL.cast(field, SQLDataType.VARCHAR)),
+                    "\""
+                )
+            return if (useExpensiveSaferCasting) {
+                DSL.function(
+                    DSL.name("pg_temp", "airbyte_safe_cast"),
+                    dialectType,
+                    extractAsText,
+                    DSL.cast(DSL.`val`(null as Any?), dialectType)
+                )
+            } else {
+                DSL.cast(extractAsText, dialectType)
+            }
         } else {
             val dialectType = toDialectType(type)
             // jsonb can't directly cast to most types, so convert to text first.
