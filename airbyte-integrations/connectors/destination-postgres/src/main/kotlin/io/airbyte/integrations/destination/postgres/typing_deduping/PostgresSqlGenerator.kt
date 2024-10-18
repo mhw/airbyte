@@ -176,6 +176,37 @@ class PostgresSqlGenerator(namingTransformer: NamingConventionTransformer, casca
                     .else_(field),
                 JSONB_TYPE
             )
+        } else if (type === AirbyteProtocolType.DATE
+                || type === AirbyteProtocolType.TIME_WITHOUT_TIMEZONE
+                || type === AirbyteProtocolType.TIME_WITH_TIMEZONE
+                || type === AirbyteProtocolType.TIMESTAMP_WITHOUT_TIMEZONE
+                || type === AirbyteProtocolType.TIMESTAMP_WITH_TIMEZONE) {
+            val dialectType = toDialectType(type)
+            // jsonb can't directly cast to most types, so convert to text first.
+            // also convert jsonb null to proper sql null. For date fields with
+            // far-future years ISO8601 allows a leading '+' which Java sources
+            // generate. PostgreSQL does not parse these correctly, so trim any
+            // leading '+' from the text.
+            val extractAsText =
+                DSL.ltrim(
+                    DSL.case_()
+                        .`when`(
+                            field.isNull().or(jsonTypeof(field).eq("null")),
+                            DSL.`val`(null as String?)
+                        )
+                        .else_(DSL.cast(field, SQLDataType.VARCHAR)),
+                    "+"
+                )
+            return if (useExpensiveSaferCasting) {
+                DSL.function(
+                    DSL.name("pg_temp", "airbyte_safe_cast"),
+                    dialectType,
+                    extractAsText,
+                    DSL.cast(DSL.`val`(null as Any?), dialectType)
+                )
+            } else {
+                DSL.cast(extractAsText, dialectType)
+            }
         } else if (type === AirbyteProtocolType.UNKNOWN) {
             return DSL.cast(field, JSONB_TYPE)
         } else if (type === AirbyteProtocolType.STRING) {
